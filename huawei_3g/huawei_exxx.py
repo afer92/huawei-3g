@@ -1,6 +1,7 @@
 import requests
 import xmltodict
 import time
+import sys
 from datetime import datetime
 import netifaces
 import queue
@@ -88,33 +89,17 @@ class HuaweiModem:
         905: "Connection failed, signal poor",
     }
 
-    def __init__(self, interface, sysfs_path, log=None, logLevel=logging.INFO):
-        """ Create instance of the HuaweiModem class
+    def init(self, interface, sysfs_path, log, logLevel):
 
-        :param interface: Name of the network interface associated with this modem
-        :param sysfs_path: The path in /sys/** that represents this USB device
-        :param log object: if none, a default object will be used
-        :param logLevel default to INFO
-        """
-        self.interface = interface
         gws = netifaces.gateways()
         for nettpl in gws[netifaces.AF_INET]:
             if nettpl[1] == interface:
                 ip = nettpl[0]
                 break
-        self.path = sysfs_path
         self.ip = ip
         self._base_url = "http://{}/api".format(self.ip)
         self.token = ""
         self._headers = None
-        if log is None:
-            logger = logging.getLogger(u'HuaweiModem')
-            logger.setLevel(logLevel)
-            handler = logging.StreamHandler()
-            logger.addHandler(handler)
-            self._log = logger
-        else:
-            self._log = logger
 
         self._infos = {}
         try:
@@ -129,9 +114,50 @@ class HuaweiModem:
             self._devicename = u'E3372'
         self._log.debug(u'{}'.format(self._infos))
         # self._get_token()
+        
+
+    def __init__(self, interface, sysfs_path, log=None, logLevel=logging.INFO):
+        """ Create instance of the HuaweiModem class
+
+        :param interface: Name of the network interface associated with this modem
+        :param sysfs_path: The path in /sys/** that represents this USB device
+        :param log object: if none, a default object will be used
+        :param logLevel default to INFO
+        """
+        
+        self.interface = interface
+        self.path = sysfs_path
+        self._logLevel = logLevel
+
+        if log is None:
+            logger = logging.getLogger(u'HuaweiModem')
+            logger.setLevel(logLevel)
+            handler = logging.StreamHandler()
+            logger.addHandler(handler)
+            self._log = logger
+        else:
+            self._log = logger
+
+        self.init(self.interface, self.path, log=self._log, logLevel=logLevel)
 
     def get_device_infos(self):
         status_raw = self._api_get("/device/information")
+        return(status_raw)
+
+    @property
+    def device_signal(self):
+        return self.get_device_signal()
+
+    def get_device_signal(self):
+        status_raw = self._api_get("/device/signal")
+        return(status_raw)
+
+    @property
+    def autorun_version(self):
+        return self.get_autorun_version()
+
+    def get_autorun_version(self):
+        status_raw = self._api_get("/device/autorun-version")
         return(status_raw)
 
     @property
@@ -255,6 +281,7 @@ class HuaweiModem:
             for message in messages:
                 ids.append(message.message_id)
             self.delete_messages(ids)
+        self.init(self.interface, self.path, log=self._log, logLevel=self._logLevel)
         return messages
 
     def delete_message(self, message_id):
@@ -299,6 +326,11 @@ class HuaweiModem:
                                                    '%Y-%m-%d %H:%M:%S'))
         self.log.debug(mxml)
         self._api_post("/sms/send-sms", mxml)
+
+    def control_reboot(self):
+        mxml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Control>1</Control></request>"
+        self._api_post("/device/control", mxml)
+    
 
     def connect(self):
         xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Action>1</Action></request>"
@@ -580,45 +612,99 @@ class HuaweiModem:
                     raise Exception("Unknown error occurred")
         return {}
 
+    def _print_dict(self, name, one_dict, callBack=print):
+        result = u'\n{}:\n'.format(name)
+        for k, v in one_dict.items():
+            result += '  {}: {}\n'.format(k.ljust(10), v)
+        if callBack is not None:
+            callBack(result)
+        else:
+            return result
+
+    def _print_array(self, name, one_array, callBack=print):
+        result = u'\n{}:\n'.format(name)
+        for v in one_array:
+            result += '  {}\n'.format(v)
+        if callBack is not None:
+            callBack(result)
+        else:
+            return result
+
+    def print_status(self, callback=print):
+        return self._print_dict(u'Status', self.status, callBack=callback)
+
+    def print_message_count(self, callback=print):
+        return self._print_dict(u'message_count', self.message_count, callBack=callback)
+
+    def print_device_signal(self, callback=print):
+        return self._print_dict(u'device_signal', self.device_signal, callBack=callback)
+
+    def print_autorun_version(self, callback=print):
+        return self._print_dict(u'autorun_version', self.autorun_version, callBack=callback)
+
+    def print_in_messages(self, callback=print):
+        return self._print_array(u'in_messages', self.in_messages, callBack=callback)
+
+    def print_out_messages(self, callback=print):
+        return self._print_array(u'out_messages', self.out_messages, callBack=callback)
+
+    def all_data(self, callback=print):
+        result = u'{}\n'.format(self)
+        result += self.print_status(callback=None)
+        result += self.print_autorun_version(callback=None)
+        result += self.print_message_count(callback=None)
+        result += self.print_device_signal(callback=None)
+        result += self.print_in_messages(callback=None)
+        result += self.print_out_messages(callback=None)
+        if callback is not None:
+            callback(result)
+        else:
+            return result
+
 
 def main():
 
-    def print_status(gsm):
-        status = gsm.status
-        print(u'\nStatus:')
-        for k, v in status.items():
-            print('  {}: {}'.format(k.ljust(10), v))
-
-    def print_message_count(gsm, mtype=1):
-        message_count = gsm.message_count
-        print('\nmessage_count:')
-        for k, v in message_count.items():
-            if int(v) > 0:
-                print('  {}: {}'.format(k.ljust(10), v))
-
-        if (message_count['count'] > 0) and (mtype == 1):
-            in_messages = gsm.in_messages
-            print(u'\nin_messages:')
-            for message in in_messages:
-                print(message)
-            return
-
-        if (message_count['outbox'] > 0) and (mtype == 2):
-            out_messages = gsm.out_messages
-            print(u'\nout_messages:')
-            for message in out_messages:
-                print(message)
+    def wait_gsm(logLevel=logging.INFO):
+        gsms = []
+        try:
+            gsms = modem.load(logLevel=loglevel)
+        except UnboundLocalError:
+            pass
+        trycount = 10
+        while len(gsms) == 0:
+            print(u'.', end='', flush=True)
+            sys.stdout.flush()
+            time.sleep(5)
+            try:
+                gsms = modem.load(logLevel=logLevel)
+            except UnboundLocalError:
+                pass
+            trycount += -1
+            if trycount == 0:
+                return None
+        print(u'')
+        sys.stdout.flush()
+        if trycount < 10:
+            print(u'Waiting')
+            for i in range(1, 10):
+                time.sleep(1)
+                print(u'.', end='', flush=True)
+                sys.stdout.flush()
+        return gsms[0]
+        
 
     #
     # parse arguments
     #
     loglevel = logging.INFO
     parser = argparse.ArgumentParser(description='Test module huawei_exxx.')
+    parser.add_argument(u'--all', u'-a', help='Dump all datas', action="store_true")
     parser.add_argument(u'--debug', u'-d', help='Logging debug', action="store_true")
     parser.add_argument(u'--warning', u'-w', help='Logging warning', action="store_true")
     parser.add_argument(u'--critical', u'-c', help='Logging critical', action="store_true")
     parser.add_argument(u'--list-out', u'-o', help='Out messages list', action="store_true")
     parser.add_argument(u'--list-in', u'-i', help='In messages list', action="store_true")
+    parser.add_argument(u'--reboot', u'-r', help='Reboot usb stick', action="store_true")
     parser.add_argument(u'--number', u'-n', help='Phone numbers comma separated')
     parser.add_argument(u'--text', u'-t', help='sms text')
     args = parser.parse_args()
@@ -630,19 +716,47 @@ def main():
     if args.critical:
         loglevel = logging.CRITICAL
     import modem as modem
-    gsm = modem.load(logLevel=loglevel)[0]
+    gsm = wait_gsm(logLevel=loglevel)
+    if gsm is None:
+        print(u'No gsm stick')
+        return
+
+    if args.all:
+        gsm.all_data(callback=print)
+        return
+
     print(gsm)
-    print_status(gsm)
+
+    gsm.print_status(callback=print)
+
+    if args.reboot:
+        gsm.control_reboot()
+        print(u'\nReboot', end='', flush=True)
+        sys.stdout.flush()
+        for i in range(1, 10):
+            time.sleep(1)
+            print(u'.', end='', flush=True)
+            sys.stdout.flush()
+        gsm = wait_gsm(logLevel=loglevel)
+        if gsm is None:
+            print(u'No gsm stick')
+        print_status(gsm)
+        return
+
+    gsm.print_device_signal(callback=print)
+    gsm.print_autorun_version(callback=print)
+    gsm.print_message_count(callback=print)
+
     if args.list_out:
-        print_message_count(gsm, mtype=2)
+        gsm.print_out_messages(callback=print)
     elif args.list_in:
-        print_message_count(gsm)
+        gsm.print_in_messages(callback=print)
     if args.number and args.text:
         print(args.number, args.text)
         gsm.send_sms(args.number, args.text)
-        print_message_count(gsm, mtype=2)
-        print_status(gsm)
-
+        gsm = wait_gsm(logLevel=loglevel)
+        gsm.print_out_messages(callback=print)
+        gsm.print_status(callback=print)
 
 if __name__ == '__main__':
     main()
